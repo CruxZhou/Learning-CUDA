@@ -1,1 +1,5 @@
 Makefile
+
+# CUDA build artifacts
+*.o
+test_kernels
