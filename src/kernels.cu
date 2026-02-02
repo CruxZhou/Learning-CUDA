@@ -1,14 +1,15 @@
 #include <vector>
 #include <cuda_fp16.h>
+#include <math_constants.h>
 #include <cooperative_groups.h>
 namespace cg = cooperative_groups;
 
 #include "../tester/utils.h"
 
-
 // ---------宏定义部分---------
 
 // 错误检查宏
+#ifndef CUDA_CHECK
 #define CUDA_CHECK(call) \
 do { \
     cudaError_t err = call; \
@@ -18,12 +19,16 @@ do { \
         exit(1);                                                   \
     } \
 } while(0)
+#endif
 
+// ---------通用函数实现部分---------
 
-
-// ---------函数实现部分---------
+/**
+ * @brief 归约求和函数。
+ * 利用 __shfl_down_sync 指令完成整个 warp 的 sum(val)。
+ */
 template <typename T>
-__device__ __forceinline__ T warp_reduce(T val){
+__device__ __forceinline__ T warp_reduce_sum(T val){
 #pragma unroll
   for(int offset = 16; offset > 0; offset >>= 1){
     val += __shfl_down_sync(0xffffffff, val, offset);
@@ -31,6 +36,7 @@ __device__ __forceinline__ T warp_reduce(T val){
   return val;
 }
 
+// ---------核函数与调用部分---------
 
 template <typename T>
 __global__ void trace_warp_shuffle_kernel(const T* __restrict__ input, T* __restrict__ output, const size_t diag, const size_t cols, const size_t step) {
@@ -47,7 +53,7 @@ __global__ void trace_warp_shuffle_kernel(const T* __restrict__ input, T* __rest
     sum += input[i * cols + i];
   }
 
-  T warp_sum = warp_reduce(sum);
+  T warp_sum = warp_reduce_sum(sum);
   if(tid % 32 == 0){
     smem[tid / 32] = warp_sum;
   }
@@ -56,13 +62,12 @@ __global__ void trace_warp_shuffle_kernel(const T* __restrict__ input, T* __rest
   int num_warps = (blockDim.x + 31) / 32;
   if(tid < 32){
     T block_sum = (tid < num_warps) ? smem[tid] : (T)0;
-    block_sum = warp_reduce(block_sum);
+    block_sum = warp_reduce_sum(block_sum);
     if(tid == 0){
       atomicAdd(output, block_sum);
     }
   }
 }
-
 
 template <typename T>
 void trace_calculate(const T* input, T* output, size_t rows, size_t cols, const dim3& block_dim, const dim3& grid_dim) {
@@ -73,10 +78,19 @@ void trace_calculate(const T* input, T* output, size_t rows, size_t cols, const 
   trace_warp_shuffle_kernel<T><<<grid_dim, block_dim, smem_size>>>(input, output, diag, cols, step);
 }
 
-template <typename T>
-__global__ void trace_cooperative_reduce_kernel(const T* __restrict__ input, T* __restrict__ partial,          // 长度至少 gridDim.x，最终结果写 partial[0]
-                                                const size_t diag, const size_t cols, const size_t step) {
 
+/**
+ * @brief 基于 Cooperative Groups 的全网格协同 trace 计算核函数。
+ *
+ * 该核函数计算矩阵迹，并通过两级归约避免原子操作：
+ *   1. **块内归约**：每个线程块使用 grid-stride loop 分配对角线索引，
+ *      通过 warp shuffle 和 shared memory 归约得到块局部和，存入 partial[blockIdx.x]；
+ *   2. **全局归约**：由 blockIdx.x == 0 的线程块读取所有 partial[i]，
+ *      再次进行块内归约，最终将总和写入 partial[0]。
+ */
+template <typename T>
+__global__ void trace_cooperative_reduce_kernel(const T* __restrict__ input, T* __restrict__ partial, // 长度至少 gridDim.x，最终结果写 partial[0]
+                                                const size_t diag, const size_t cols, const size_t step) {
     extern __shared__ unsigned char smem_raw[];
     T* smem = reinterpret_cast<T*>(smem_raw);
 
@@ -92,7 +106,7 @@ __global__ void trace_cooperative_reduce_kernel(const T* __restrict__ input, T* 
         sum += input[i * cols + i];
     }
 
-    T warp_sum = warp_reduce(sum); // warp 内归约
+    T warp_sum = warp_reduce_sum(sum); // warp 内归约
 
     if ((tid & 31) == 0) {
         smem[tid >> 5] = warp_sum;
@@ -102,7 +116,7 @@ __global__ void trace_cooperative_reduce_kernel(const T* __restrict__ input, T* 
     const int num_warps = (blockDim.x + 31) / 32;
     if (tid < 32) {
         T block_sum = (tid < (unsigned)num_warps) ? smem[tid] : (T)0;
-        block_sum = warp_reduce(block_sum);
+        block_sum = warp_reduce_sum(block_sum);
         if (tid == 0) {
             partial[blockIdx.x] = block_sum;
         }
@@ -115,7 +129,7 @@ __global__ void trace_cooperative_reduce_kernel(const T* __restrict__ input, T* 
             final_sum += partial[i];
         }
 
-        T warp_val = warp_reduce(final_sum);
+        T warp_val = warp_reduce_sum(final_sum);
         if ((tid & 31) == 0) {
             smem[tid >> 5] = warp_val;
         }
@@ -123,7 +137,7 @@ __global__ void trace_cooperative_reduce_kernel(const T* __restrict__ input, T* 
 
         if (tid < 32) {
             T total = (tid < (unsigned)num_warps) ? smem[tid] : (T)0;
-            total = warp_reduce(total);
+            total = warp_reduce_sum(total);
             if (tid == 0) {
                 partial[0] = total;
             }
@@ -191,6 +205,7 @@ T trace(const std::vector<T>& h_input, size_t rows, size_t cols) {
   if (blocks < 1) blocks = 1;
 
   // 防止atomicAdd次数太多，限制最大blocks数量
+  // 不进行atomicAdd时可以不考虑限制
   const int max_reasonable_blocks = multi_processor_count * 32;
   if (blocks > max_reasonable_blocks) blocks = max_reasonable_blocks;
 
@@ -230,9 +245,6 @@ T trace(const std::vector<T>& h_input, size_t rows, size_t cols) {
 }
 
 
-
-
-
 /**
  * @brief Computes flash attention for given query, key, and value tensors.
  * 
@@ -254,8 +266,10 @@ void flashAttention(const std::vector<T>& h_q, const std::vector<T>& h_k,
                     const std::vector<T>& h_v, std::vector<T>& h_o,
                     int batch_size, int target_seq_len, int src_seq_len, 
                     int query_heads, int kv_heads, int head_dim, bool is_causal) {       
-  // TODO: Implement the flash attention function
+    return;
 }
+
+
 
 // *********************************************************************
 // Explicit Template Instantiations (REQUIRED FOR LINKING WITH TESTER.O)
