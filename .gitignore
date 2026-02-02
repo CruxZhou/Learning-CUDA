@@ -1,5 +1,3 @@
-Makefile
-
-# CUDA build artifacts
-*.o
+# Compiled objects and executables
+src/kernels.o
 test_kernels
