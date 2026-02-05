@@ -245,6 +245,7 @@ T trace(const std::vector<T>& h_input, size_t rows, size_t cols) {
 }
 
 
+
 /**
  * @brief Computes flash attention for given query, key, and value tensors.
  * 
@@ -266,10 +267,56 @@ void flashAttention(const std::vector<T>& h_q, const std::vector<T>& h_k,
                     const std::vector<T>& h_v, std::vector<T>& h_o,
                     int batch_size, int target_seq_len, int src_seq_len, 
                     int query_heads, int kv_heads, int head_dim, bool is_causal) {       
-    return;
+
+    size_t q_elems = (size_t)batch_size * target_seq_len * query_heads * head_dim;
+    size_t k_elems = (size_t)batch_size * src_seq_len    * kv_heads    * head_dim;
+    size_t v_elems = (size_t)batch_size * src_seq_len    * kv_heads    * head_dim;
+    size_t o_elems = (size_t)batch_size * target_seq_len * query_heads * head_dim;
+    size_t lm_elems = (size_t)batch_size * query_heads * target_seq_len;
+
+    h_o.resize(o_elems);
+
+    T *d_q = nullptr, *d_k = nullptr, *d_v = nullptr, *d_o = nullptr;
+    float *d_l = nullptr, *d_m = nullptr;
+
+    cudaStream_t stream = 0;
+
+    cudaMalloc(&d_q, q_elems * sizeof(T));
+    cudaMalloc(&d_k, k_elems * sizeof(T));
+    cudaMalloc(&d_v, v_elems * sizeof(T));
+    cudaMalloc(&d_o, o_elems * sizeof(T));
+    cudaMalloc(&d_l, lm_elems * sizeof(float));
+    cudaMalloc(&d_m, lm_elems * sizeof(float));
+
+    cudaMemcpyAsync(d_q, h_q.data(), q_elems * sizeof(T), cudaMemcpyHostToDevice, stream);
+    cudaMemcpyAsync(d_k, h_k.data(), k_elems * sizeof(T), cudaMemcpyHostToDevice, stream);
+    cudaMemcpyAsync(d_v, h_v.data(), v_elems * sizeof(T), cudaMemcpyHostToDevice, stream);
+
+    // 初始化：O=0, l=0, m=-inf 
+    cudaMemsetAsync(d_o, 0, o_elems * sizeof(T), stream);
+    cudaMemsetAsync(d_l, 0, lm_elems * sizeof(float), stream);
+
+    std::vector<float> h_m_init(lm_elems, -std::numeric_limits<float>::infinity());
+    cudaMemcpyAsync(d_m, h_m_init.data(), lm_elems * sizeof(float), cudaMemcpyHostToDevice, stream);
+
+    launchFlashAttention<T>(
+        d_q, d_k, d_v,
+        batch_size, target_seq_len, src_seq_len,
+        query_heads, kv_heads, head_dim,
+        is_causal,
+        d_l, d_m, d_o,
+        stream);
+
+    cudaMemcpyAsync(h_o.data(), d_o, o_elems * sizeof(T), cudaMemcpyDeviceToHost, stream);
+    cudaStreamSynchronize(stream);
+
+    cudaFree(d_q);
+    cudaFree(d_k);
+    cudaFree(d_v);
+    cudaFree(d_o);
+    cudaFree(d_l);
+    cudaFree(d_m);
 }
-
-
 
 // *********************************************************************
 // Explicit Template Instantiations (REQUIRED FOR LINKING WITH TESTER.O)
