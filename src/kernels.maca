@@ -45,7 +45,7 @@ __global__ void trace_warp_shuffle_kernel(const T* __restrict__ input, T* __rest
 
   T sum = (T)0;
 
-  for (size_t i = idx; i < diag; i += step) { // gird-stride loop
+  for (size_t i = idx; i < diag; i += step) { // grid-stride loop
     sum += input[i * cols + i];
   }
 
@@ -332,15 +332,14 @@ __global__ void flash_attention_kernel(
             float row_m = smem_row_m_s[q];
             float row_l = smem_row_l_s[q];
 
-            // 计算 S = Qm . Kj^T 
             if constexpr (std::is_same_v<T, float>){
                 for (int y = tid; y < KV_valid_q; y += Bl) { 
                     // 每个线程负责若干个 y（tile 的行），计算该 query 对这些 key 的 score
                     // float类型的test对精度要求更高，用下面的算法过不了精度
                     float sum = 0.0f;
                     #pragma unroll 
-                    for (int x = 0; x < 1024; ++x) {
-                        if (x >= head_dim) break;
+                    for (int x = 0; x < head_dim; ++x) {
+                    
                         sum += smem_Qm[(size_t)q * head_dim + x] *  
                             smem_K[(size_t)y * (head_dim + 1) + x];
                     }

@@ -323,8 +323,8 @@ __global__ void flash_attention_kernel(
                     // float类型的test对精度要求更高，用下面的算法过不了精度
                     float sum = 0.0f;
                     #pragma unroll 
-                    for (int x = 0; x < 1024; ++x) {
-                        if (x >= head_dim) break;
+                    for (int x = 0; x < head_dim; ++x) {
+                        
                         sum += smem_Qm[(size_t)q * head_dim + x] *  
                             smem_K[(size_t)y * (head_dim + 1) + x];
                     }
