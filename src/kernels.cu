@@ -594,7 +594,7 @@ void flash_attention_kernel_launch(
         dim3 block_dim(Bl);
 
         flash_attention_kernel<T, KV_tilesize, Bl, Qm>
-            <<<grid_dim, block_dim, smem_bytes>>>(
+            <<<grid_dim, block_dim, smem_bytes,stream>>>(
                 d_q, d_k, d_v,
                 batch_size, target_seq_len, src_seq_len,
                 query_heads, kv_heads, head_dim,
@@ -622,7 +622,7 @@ void flash_attention_kernel_launch(
         dim3 block_dim(Bl);
 
         flash_attention_kernel<T, KV_tilesize, Bl, Qm>
-            <<<grid_dim, block_dim, smem_bytes>>>(
+            <<<grid_dim, block_dim, smem_bytes,stream>>>(
                 d_q, d_k, d_v,
                 batch_size, target_seq_len, src_seq_len,
                 query_heads, kv_heads, head_dim,
