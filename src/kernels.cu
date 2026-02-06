@@ -440,7 +440,7 @@ __global__ void flash_attention_kernel(
             float row_l = smem_row_l_s[q];
 
             // 计算 S = Qm . Kj^T 
-            if constexpr (std::is_same<T, float>::value){
+            if constexpr (std::is_same_v<T, float>){
                 for (int y = tid; y < KV_valid_q; y += Bl) { 
                     // 每个线程负责若干个 y（tile 的行），计算该 query 对这些 key 的 score
                     // float类型的test对精度要求更高，用下面的算法过不了精度
@@ -454,7 +454,7 @@ __global__ void flash_attention_kernel(
                     smem_S[y] = sum * softmax_scale;
                 }
                 __syncthreads();
-            }else if constexpr (std::is_same<T, half>::value){ 
+            }else if constexpr (std::is_same_v<T, half>){ 
                 // 如果输入是half，用 warp 更高效
                 for (int y = wid; y < KV_valid_q; y += num_warps) { 
                     // 以 warp 为单位分配
@@ -572,7 +572,7 @@ void flash_attention_kernel_launch(
     assert(query_heads % kv_heads == 0); //GQA检查
     const float softmax_scale = 1.0f / sqrtf((float)head_dim);
 
-    if constexpr (std::is_same_v<T, half>) {
+    if constexpr (std::is_same_v<T, half>) { //is_same_v需要C++17
         constexpr int Bl = 128; // half用128；float用256
         constexpr int KV_tilesize = 32; // KV tile 大小，如果选大了精度会下降
         constexpr int Qm = 16; // 一次处理Qm个query token
