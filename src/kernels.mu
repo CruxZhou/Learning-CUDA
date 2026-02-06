@@ -202,7 +202,7 @@ __global__ void flash_attention_kernel(
     // --------- 预处理 ----------
     const float softmax_scale = 1.0f / sqrtf((float)head_dim); // 适配过程发现host端无法计算
 
-    // 每个block处理Qm个query头
+    // 每个block处理Qm个query token
     const int t_block = blockIdx.x;  
     const int q_head = blockIdx.y;
     const int batch_idx = blockIdx.z;
@@ -230,7 +230,7 @@ __global__ void flash_attention_kernel(
     // 线程/warp 划分
     const int lane = tid & 31; 
     const int wid  = tid >> 5;
-    const int num_warps = (Bl + 31) / 32; //Br是blockDim.x
+    const int num_warps = (Bl + 31) / 32; //blockDim.x
 
     // --------- shared memory切分 ----------
     extern __shared__ float smem[];
@@ -264,7 +264,7 @@ __global__ void flash_attention_kernel(
             const size_t q_offset = (size_t)batch_idx * Q_b_stride + (size_t)tq * Q_t_stride + (size_t)q_head * Q_h_stride;
             for (int x = tid; x < head_dim; x += Bl) { 
             // 并行加载 head_dim 维向量
-            // 每个block有Br个线程
+            // 每个block有Bl个线程
                 smem_Qm[(size_t)q * head_dim + x] = to_float<T>(Q[q_offset + x]);
                 smem_O[(size_t)q * head_dim + x] = 0.0f;
             }
